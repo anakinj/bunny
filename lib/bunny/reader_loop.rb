@@ -8,7 +8,7 @@ module Bunny
   # This mimics the way RabbitMQ Java is designed quite closely.
   # @private
   class ReaderLoop
-
+    IO_ERRORS = [AMQ::Protocol::EmptyResponseError, IOError, SystemCallError].freeze
     def initialize(transport, session, session_thread)
       @transport      = transport
       @session        = session
@@ -33,7 +33,7 @@ module Bunny
         begin
           break if @mutex.synchronize { @stopping || @stopped || @network_is_down }
           run_once
-        rescue AMQ::Protocol::EmptyResponseError, IOError, SystemCallError, Timeout::Error => e
+        rescue *IO_ERRORS, Timeout::Error => e
           break if terminate? || @session.closing? || @session.closed?
 
           @network_is_down = true
@@ -124,19 +124,21 @@ module Bunny
     protected
 
     def log_exception(e, level: :error)
-      if !(io_error?(e) && (@session.closing? || @session.closed?))
-        @logger.send level, "Exception in the reader loop: #{e.class.name}: #{e.message}"
-        @logger.send level, "Backtrace: "
-        e.backtrace.each do |line|
-          @logger.send level, "\t#{line}"
-        end
+      return if io_error?(e) && (@session.closing? || @session.closed?)
+      @logger.send level, "Exception in the reader loop: #{e.class.name}: #{e.message}"
+      log_backtrace(e, level: level)
+    end
+
+    def log_backtrace(e, level:)
+      return if level == :error
+      @logger.error "Backtrace: "
+      e.backtrace.each do |line|
+        @logger.error "\t#{line}"
       end
     end
 
     def io_error?(e)
-      [AMQ::Protocol::EmptyResponseError, IOError, SystemCallError].any? do |klazz|
-        e.is_a?(klazz)
-      end
+      IO_ERRORS.any? { |error_klass| e.is_a?(error_klass) }
     end
 
     def terminate?
